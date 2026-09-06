@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from app.database import db
-from app.ops import appearance, logs, servers, settings, subscriptions, system, updates
+from app.ops import appearance, logs, servers, settings, subscriptions, system, updates, warp
 from app.ops.utils import to_uuid
 
 
@@ -23,6 +23,24 @@ class OperationsApi:
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         return settings.update_settings(payload)
+
+    # ──────────────────────────────
+    # WARP
+    # ──────────────────────────────
+    def get_warp_status(self) -> dict[str, Any]:
+        return warp.get_warp_status()
+
+    def enable_warp(self) -> dict[str, Any]:
+        return warp.enable_warp()
+
+    def disable_warp(self) -> dict[str, Any]:
+        return warp.disable_warp()
+
+    def generate_warp_profile(self) -> dict[str, Any]:
+        return warp.generate_warp_profile()
+
+    def unregister_warp(self) -> dict[str, Any]:
+        return warp.unregister_warp()
 
     # ──────────────────────────────
     # Appearance

@@ -387,6 +387,75 @@ class ProcessManager:
 
         return config
 
+    def _apply_warp_outbound(self, config: dict) -> dict:
+        """Inject WARP WireGuard outbound chained to proxy when enabled."""
+        warp_enabled = False
+        profile_dict = None
+        try:
+            db_settings = db.get_settings()
+            warp_enabled = bool(getattr(db_settings, "warp_enabled", False))
+            profile_dict = getattr(db_settings, "warp_profile", None)
+        except Exception as e:
+            logger.warning(f"Failed to read WARP settings: {e}")
+
+        modified_config = deepcopy(config)
+        if "outbounds" not in modified_config:
+            modified_config["outbounds"] = []
+
+        # Always strip previous warp outbound for clean toggle
+        modified_config["outbounds"] = [
+            outbound for outbound in modified_config["outbounds"] if outbound.get("tag", "").lower() != "warp"
+        ]
+
+        if not warp_enabled or not profile_dict:
+            return modified_config
+
+        proxy_tag = self._resolve_proxy_outbound_tag(modified_config)
+        if not proxy_tag:
+            logger.warning("WARP enabled but no proxy outbound found to chain; skipping WARP injection")
+            return modified_config
+
+        private_key = profile_dict.get("private_key")
+        address_v4 = profile_dict.get("address_v4")
+        address_v6 = profile_dict.get("address_v6")
+        peer_public_key = profile_dict.get("peer_public_key")
+        endpoint = profile_dict.get("endpoint")
+        mtu = profile_dict.get("mtu", 1280)
+
+        if not (private_key and peer_public_key and endpoint):
+            logger.warning("WARP profile missing required keys; skipping WARP injection")
+            return modified_config
+
+        addresses = []
+        if address_v4:
+            addresses.append(f"{address_v4}/32" if "/" not in address_v4 else address_v4)
+        if address_v6:
+            addresses.append(f"{address_v6}/128" if "/" not in address_v6 else address_v6)
+
+        warp_outbound = {
+            "tag": "warp",
+            "protocol": "wireguard",
+            "settings": {
+                "secretKey": private_key,
+                "address": addresses,
+                "peers": [
+                    {
+                        "publicKey": peer_public_key,
+                        "endpoint": endpoint,
+                    }
+                ],
+                "mtu": mtu,
+            },
+            "proxySettings": {
+                "tag": proxy_tag,
+            },
+        }
+
+        # Add warp outbound
+        modified_config["outbounds"].append(warp_outbound)
+        logger.info(f"Added WARP wireguard outbound chained through proxy '{proxy_tag}'")
+        return modified_config
+
     def _ensure_direct_outbound(self, config: dict) -> dict:
         """Ensure that a 'direct' outbound with 'direct' tag exists in the configuration."""
         modified_config = deepcopy(config)
@@ -406,7 +475,7 @@ class ProcessManager:
                 "protocol": "freedom",
                 "tag": "direct",
                 "settings": {
-                    "domainStrategy": "UseIPv4v6",
+                    "domainStrategy": "UseIPv4",
                 },
             }
             modified_config["outbounds"].append(direct_outbound)
@@ -416,7 +485,7 @@ class ProcessManager:
                 if outbound.get("tag", "").lower() == "direct" and outbound.get("protocol", "").lower() == "freedom":
                     if "settings" not in outbound:
                         outbound["settings"] = {}
-                    outbound["settings"].setdefault("domainStrategy", "UseIPv4v6")
+                    outbound["settings"].setdefault("domainStrategy", "UseIPv4")
 
         return modified_config
 
@@ -433,7 +502,7 @@ class ProcessManager:
                     "protocol": "freedom",
                     "tag": "bypass",
                     "settings": {
-                        "domainStrategy": "UseIPv4v6",
+                        "domainStrategy": "UseIPv4",
                     },
                 },
             )
@@ -443,7 +512,7 @@ class ProcessManager:
                 if outbound.get("tag", "").lower() == "bypass" and outbound.get("protocol", "").lower() == "freedom":
                     if "settings" not in outbound:
                         outbound["settings"] = {}
-                    outbound["settings"].setdefault("domainStrategy", "UseIPv4v6")
+                    outbound["settings"].setdefault("domainStrategy", "UseIPv4")
 
         return modified_config
 
@@ -466,13 +535,21 @@ class ProcessManager:
 
         return modified_config
 
+    def _resolve_routing_proxy_tag(self, config: dict) -> str | None:
+        """Pick the effective proxy tag for client traffic (WARP if enabled and present, else primary proxy)."""
+        outbounds = config.get("outbounds") or []
+        for outbound in outbounds:
+            if str(outbound.get("tag") or "").strip().lower() == "warp":
+                return "warp"
+        return self._resolve_proxy_outbound_tag(config)
+
     def _resolve_proxy_outbound_tag(self, config: dict) -> str | None:
         """Pick the primary proxy outbound tag from the config."""
         outbounds = config.get("outbounds") or []
         if not outbounds:
             return None
 
-        reserved_tags = {"direct", "bypass", "block", "blocked", "reject", "blackhole", "dns-out", "api"}
+        reserved_tags = {"direct", "bypass", "block", "blocked", "reject", "blackhole", "dns-out", "api", "warp"}
         reserved_protocols = {"freedom", "blackhole", "dns", "loopback"}
 
         for outbound in outbounds:
@@ -495,7 +572,7 @@ class ProcessManager:
         tag = str(first.get("tag") or "").strip()
         return tag or None
 
-    def _build_xray_rule_from_settings(self, rule, proxy_tag: str | None) -> dict | None:
+    def _build_xray_rule_from_settings(self, rule, proxy_tag: str | None, has_warp: bool = False) -> dict | None:
         """Convert a settings routing rule into an Xray routing rule."""
         action = getattr(rule, "action", None)
         action_value = action.value if hasattr(action, "value") else str(action or "")
@@ -504,6 +581,14 @@ class ProcessManager:
             outbound_tag = "bypass"
         elif action_value == "block":
             outbound_tag = "block"
+        elif action_value == "warp":
+            if not has_warp:
+                logger.warning("WARP routing rule requested but WARP outbound not available; falling back to proxy")
+                if not proxy_tag:
+                    return None
+                outbound_tag = proxy_tag
+            else:
+                outbound_tag = "warp"
         elif action_value == "proxy":
             if not proxy_tag:
                 logger.warning("Skipping proxy routing rule because no proxy outbound was found")
@@ -566,10 +651,14 @@ class ProcessManager:
         if "rules" not in modified_config["routing"]:
             modified_config["routing"]["rules"] = []
 
-        proxy_tag = self._resolve_proxy_outbound_tag(modified_config)
+        proxy_tag = self._resolve_routing_proxy_tag(modified_config)
+        has_warp = any(
+            str(outbound.get("tag") or "").strip().lower() == "warp"
+            for outbound in (modified_config.get("outbounds") or [])
+        )
         custom_rules: list[dict] = []
         for rule in enabled_rules:
-            xray_rule = self._build_xray_rule_from_settings(rule, proxy_tag)
+            xray_rule = self._build_xray_rule_from_settings(rule, proxy_tag, has_warp=has_warp)
             if xray_rule:
                 custom_rules.append(xray_rule)
 
@@ -617,6 +706,7 @@ class ProcessManager:
         if not dns_hijack:
             return modified_config
 
+        # Always chain DNS-out through primary proxy outbound, NEVER through WARP directly
         proxy_tag = self._resolve_proxy_outbound_tag(modified_config)
         if not proxy_tag:
             logger.warning("DNS hijack enabled but no proxy outbound was found; skipping")
@@ -629,7 +719,7 @@ class ProcessManager:
                 "rewriteAddress": "1.1.1.1",
                 "rewriteNetwork": "udp",
                 "port": 53,
-                "domainStrategy": "UseIPv4v6",
+                "domainStrategy": "UseIPv4",
             },
             "proxySettings": {
                 "tag": proxy_tag,
@@ -640,14 +730,11 @@ class ProcessManager:
         # Configure DNS block to prefer IPv4 with IPv6 fallback
         if "dns" not in modified_config or not isinstance(modified_config.get("dns"), dict):
             modified_config["dns"] = {
-                "servers": [
-                    "1.1.1.1",
-                    "8.8.8.8",
-                ],
-                "queryStrategy": "UseIPv4v6",
+                "servers": ["1.1.1.1", "8.8.8.8", "127.0.0.1"],
+                "queryStrategy": "UseIPv4",
             }
         else:
-            modified_config["dns"]["queryStrategy"] = "UseIPv4v6"
+            modified_config["dns"]["queryStrategy"] = "UseIPv4"
 
         # Ensure routing domainStrategy is set to IPIfNonMatch for DNS resolution stage
         if "routing" in modified_config:
@@ -661,7 +748,7 @@ class ProcessManager:
         }
         # Highest priority so DNS is always captured when enabled.
         modified_config["routing"]["rules"] = [dns_rule, *modified_config["routing"]["rules"]]
-        logger.info(f"Applied DNS hijack via dns-out -> {proxy_tag} with UseIPv4v6 domain strategy")
+        logger.info(f"Applied DNS hijack via dns-out -> {proxy_tag} with UseIPv4 domain strategy")
         return modified_config
 
     def _ensure_routing_rules(self, config: dict) -> dict:
@@ -719,6 +806,57 @@ class ProcessManager:
         if not added_any and len(existing_rules) == 0:
             logger.debug("Routing rules already exist or were added")
 
+        return modified_config
+
+    def _apply_warp_route_all(self, config: dict) -> dict:
+        """Append route-all-traffic catch-all rule to WARP outbound when enabled."""
+        warp_enabled = False
+        warp_route_all = False
+        try:
+            db_settings = db.get_settings()
+            warp_enabled = bool(getattr(db_settings, "warp_enabled", False))
+            warp_route_all = bool(getattr(db_settings, "warp_route_all", False))
+        except Exception as e:
+            logger.warning(f"Failed to read warp_route_all setting: {e}")
+
+        modified_config = deepcopy(config)
+        if "routing" not in modified_config:
+            modified_config["routing"] = {}
+        if "rules" not in modified_config["routing"]:
+            modified_config["routing"]["rules"] = []
+
+        # Strip previous warp catch-all rules for clean reload
+        modified_config["routing"]["rules"] = [
+            rule
+            for rule in modified_config["routing"]["rules"]
+            if not (
+                str(rule.get("outboundTag", "")).lower() == "warp"
+                and str(rule.get("port", "")) == "0-65535"
+                and not rule.get("domain")
+                and not rule.get("ip")
+                and not rule.get("protocol")
+                and not rule.get("process")
+            )
+        ]
+
+        if not warp_enabled or not warp_route_all:
+            return modified_config
+
+        has_warp = any(
+            str(outbound.get("tag") or "").strip().lower() == "warp"
+            for outbound in (modified_config.get("outbounds") or [])
+        )
+        if not has_warp:
+            logger.warning("warp_route_all enabled but warp outbound not present; skipping catch-all rule")
+            return modified_config
+
+        warp_catch_all_rule = {
+            "type": "field",
+            "port": "0-65535",
+            "outboundTag": "warp",
+        }
+        modified_config["routing"]["rules"].append(warp_catch_all_rule)
+        logger.info("Appended WARP catch-all routing rule (port 0-65535 -> warp)")
         return modified_config
 
     def _get_tun_interface_name(self) -> str:
@@ -785,11 +923,11 @@ class ProcessManager:
                 "destOverride": [
                     "http",
                     "tls",
-                    "fakedns",
+                    "quic",
                 ],
                 "enabled": True,
                 "metadataOnly": False,
-                "routeOnly": True,
+                "routeOnly": False,
             },
         }
 
@@ -856,6 +994,10 @@ class ProcessManager:
             # Apply log level override at runtime (not stored in database)
             runtime_config = self._apply_log_level_override(runtime_config)
 
+            # Apply WARP WireGuard outbound chaining when enabled (skip for URL/latency tests)
+            if not is_test:
+                runtime_config = self._apply_warp_outbound(runtime_config)
+
             # Ensure direct outbound exists
             runtime_config = self._ensure_direct_outbound(runtime_config)
 
@@ -871,6 +1013,10 @@ class ProcessManager:
 
             # Hijack DNS port 53 through dns-out when enabled
             runtime_config = self._apply_dns_hijack(runtime_config)
+
+            # Route all traffic through WARP when enabled (appended at end) (skip for URL/latency tests)
+            if not is_test:
+                runtime_config = self._apply_warp_route_all(runtime_config)
 
             # Inject TUN inbound when TUN mode is enabled (skip for URL tests)
             tun_mode = False
@@ -888,7 +1034,7 @@ class ProcessManager:
             # Convert config to JSON string with UUID support
             config_json = json.dumps(runtime_config, indent=2, cls=UUIDEncoder)
 
-            # open(f"config_{server_id}.json", "w").write(config_json)
+            open(f"config_{server_id}.json", "w").write(config_json)
 
             logger.debug(
                 f"Starting server {server_id} with config size: {len(config_json)} bytes",
@@ -973,12 +1119,7 @@ class ProcessManager:
             time.sleep(1.0 if tun_mode else 0.1)
 
             if process.poll() is not None:
-                # Process died immediately, clean up and return failure
-                logger.error(
-                    f"Server {server_id} process died immediately with return code {process.returncode}",
-                )
-
-                # Try to read any error output
+                # Try to read any error output before logging
                 error_details = f"Process exited with code {process.returncode}"
                 try:
                     remaining_output = process.stdout.read() if process.stdout else b""
@@ -987,10 +1128,13 @@ class ProcessManager:
                             "utf-8",
                             errors="ignore",
                         ).strip()
-                        logger.error(f"Server {server_id} error output: {error_msg}")
                         error_details = f"Process exited with code {process.returncode}. Error: {error_msg}"
                 except Exception as ex:
                     logger.debug(f"Failed to read error output: {ex}")
+
+                logger.error(
+                    f"Server {server_id} process died immediately with return code {process.returncode}. Details: {error_details}",
+                )
 
                 # Clean up
                 self._cleanup_temp_config(server_id)

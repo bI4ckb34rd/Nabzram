@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Modal from './Modal';
 import * as api from '../services/api';
-import { RoutingRule, SettingsUpdate } from '../types';
+import { RoutingRule, SettingsUpdate, WarpStatusResponse } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
 import { useToast } from '../contexts/ToastContext';
 import CustomSelect, { SelectOption } from './CustomSelect';
@@ -62,9 +62,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
     const [isApplyingXray, setIsApplyingXray] = useState(false);
     const [isSavingRouting, setIsSavingRouting] = useState(false);
     const [fontInput, setFontInput] = useState(font);
-    const [activeTab, setActiveTab] = useState<'general' | 'routing' | 'appearance'>('general');
+    const [activeTab, setActiveTab] = useState<'general' | 'routing' | 'warp' | 'appearance'>('general');
     const [xrayBinaryInput, setXrayBinaryInput] = useState('');
     const { addToast } = useToast();
+
+    // WARP state
+    const [warpStatus, setWarpStatus] = useState<WarpStatusResponse | null>(null);
+    const [warpLoadingAction, setWarpLoadingAction] = useState<string | null>(null);
 
     // Ref to hold the initially loaded settings to prevent auto-saving on mount
     const initialSettings = useRef<SettingsUpdate | null>(null);
@@ -83,10 +87,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
                 tun_routing: currentSettings.tun_routing ?? 'ipv4_ipv6',
                 dns_hijack: currentSettings.dns_hijack ?? true,
                 routing_rules: currentSettings.routing_rules ?? [],
+                warp_enabled: currentSettings.warp_enabled ?? false,
+                warp_route_all: currentSettings.warp_route_all ?? false,
             };
             setSettings(fetchedSettings);
             setXrayBinaryInput(currentSettings.xray_binary ?? '');
             initialSettings.current = fetchedSettings;
+
+            // Fetch WARP status
+            const warpRes = await api.getWarpStatus();
+            setWarpStatus(warpRes);
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to load settings';
             addToast(message, 'error');
@@ -116,6 +126,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
         if (settings.dns_hijack !== initialSettings.current.dns_hijack) {
             changes.dns_hijack = settings.dns_hijack;
         }
+        if (settings.warp_route_all !== initialSettings.current.warp_route_all) {
+            changes.warp_route_all = settings.warp_route_all;
+        }
         if (settings.xray_log_level !== initialSettings.current.xray_log_level) {
             changes.xray_log_level = settings.xray_log_level || null;
         }
@@ -131,7 +144,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
                     addToast(message, 'error');
                 });
         }
-    }, [settings.system_proxy, settings.tun_mode, settings.tun_routing, settings.dns_hijack, settings.xray_log_level, addToast]);
+    }, [settings.system_proxy, settings.tun_mode, settings.tun_routing, settings.dns_hijack, settings.warp_route_all, settings.xray_log_level, addToast]);
 
     // Auto-save with debounce for ports and assets folder
     useEffect(() => {
@@ -227,6 +240,68 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
         setFont(trimmedFont);
     };
 
+    // WARP Actions
+    const handleToggleWarp = async () => {
+        const targetState = !warpStatus?.enabled;
+        setWarpLoadingAction(targetState ? 'enabling' : 'disabling');
+        try {
+            if (targetState) {
+                const res = await api.enableWarp();
+                setWarpStatus(res);
+                setSettings(prev => ({ ...prev, warp_enabled: true }));
+                if (initialSettings.current) initialSettings.current.warp_enabled = true;
+                addToast(res.message || 'WARP enabled successfully', 'success');
+            } else {
+                const res = await api.disableWarp();
+                setWarpStatus(res);
+                setSettings(prev => ({ ...prev, warp_enabled: false }));
+                if (initialSettings.current) initialSettings.current.warp_enabled = false;
+                addToast('WARP disabled', 'info');
+            }
+            onSaveSuccess();
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Failed to update WARP state';
+            addToast(message, 'error');
+        } finally {
+            setWarpLoadingAction(null);
+        }
+    };
+
+    const handleGenerateWarpProfile = async () => {
+        setWarpLoadingAction('generating_profile');
+        try {
+            const res = await api.generateWarpProfile();
+            setWarpStatus(res);
+            addToast(res.message || 'WARP profile generated successfully', 'success');
+            onSaveSuccess();
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Failed to generate WARP profile';
+            addToast(message, 'error');
+        } finally {
+            setWarpLoadingAction(null);
+        }
+    };
+
+    const handleUnregisterWarp = async () => {
+        setWarpLoadingAction('unregistering');
+        try {
+            const res = await api.unregisterWarp();
+            setWarpStatus(res);
+            setSettings(prev => ({ ...prev, warp_enabled: false, warp_route_all: false }));
+            if (initialSettings.current) {
+                initialSettings.current.warp_enabled = false;
+                initialSettings.current.warp_route_all = false;
+            }
+            addToast('WARP unregistered and credentials removed', 'info');
+            onSaveSuccess();
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Failed to unregister WARP';
+            addToast(message, 'error');
+        } finally {
+            setWarpLoadingAction(null);
+        }
+    };
+
     return (
         <Modal title="Settings" onClose={onClose} bodyClassName="!p-0">
             {isLoading ? (
@@ -239,6 +314,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
                         <nav className="flex space-x-2" aria-label="Tabs" role="tablist">
                              <TabButton tabName="general" currentTab={activeTab} setTab={() => setActiveTab('general')}>
                                 General
+                            </TabButton>
+                            <TabButton tabName="warp" currentTab={activeTab} setTab={() => setActiveTab('warp')}>
+                                WARP
                             </TabButton>
                             <TabButton tabName="routing" currentTab={activeTab} setTab={() => setActiveTab('routing')}>
                                 Routing
@@ -434,6 +512,142 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onSaveSuccess, i
                                             min="0"
                                             max="65535"
                                         />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {activeTab === 'warp' && (
+                            <div className="space-y-6">
+                                <div>
+                                    <h3 className="text-md font-semibold text-foreground mb-3">Cloudflare WARP</h3>
+                                    <p className="text-xs text-muted-foreground/80 mb-4">
+                                        Chain a Cloudflare WARP (WireGuard) outbound through your active proxy connection for extra privacy and anti-censorship.
+                                    </p>
+
+                                    <div className="space-y-4">
+                                        <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                                            <div>
+                                                <label htmlFor="warp-toggle" className="text-sm font-medium text-foreground select-none">
+                                                    Enable WARP Chaining
+                                                </label>
+                                                <p className="text-xs text-muted-foreground/80 mt-1">
+                                                    Automatically registers and generates a WireGuard profile if needed.
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center space-x-2">
+                                                {warpLoadingAction && (
+                                                    <span className="text-xs text-primary animate-pulse font-medium">
+                                                        {warpLoadingAction === 'enabling' && 'Registering & Generating Profile...'}
+                                                        {warpLoadingAction === 'disabling' && 'Disabling WARP...'}
+                                                        {warpLoadingAction === 'generating_profile' && 'Generating Profile...'}
+                                                        {warpLoadingAction === 'unregistering' && 'Unregistering...'}
+                                                    </span>
+                                                )}
+                                                <button
+                                                    type="button"
+                                                    id="warp-toggle"
+                                                    role="switch"
+                                                    aria-checked={warpStatus?.enabled ?? false}
+                                                    onClick={handleToggleWarp}
+                                                    disabled={warpLoadingAction !== null}
+                                                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-card disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                        warpStatus?.enabled ? 'bg-primary' : 'bg-input'
+                                                    }`}
+                                                >
+                                                    <span
+                                                        aria-hidden="true"
+                                                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                                            warpStatus?.enabled ? 'translate-x-5' : 'translate-x-0'
+                                                        }`}
+                                                    />
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {warpStatus?.enabled && (
+                                            <>
+                                                <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                                                    <div>
+                                                        <label htmlFor="warp-route-all-toggle" className="text-sm font-medium text-foreground select-none">
+                                                            Route All Traffic Through WARP
+                                                        </label>
+                                                        <p className="text-xs text-muted-foreground/80 mt-1">
+                                                            Adds catch-all rule (port 0-65535 to WARP) at the end of routing rules.
+                                                        </p>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        id="warp-route-all-toggle"
+                                                        role="switch"
+                                                        aria-checked={settings.warp_route_all ?? false}
+                                                        onClick={() => setSettings(prev => ({ ...prev, warp_route_all: !prev.warp_route_all }))}
+                                                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-card disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                            settings.warp_route_all ? 'bg-primary' : 'bg-input'
+                                                        }`}
+                                                    >
+                                                        <span
+                                                            aria-hidden="true"
+                                                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                                                settings.warp_route_all ? 'translate-x-5' : 'translate-x-0'
+                                                            }`}
+                                                        />
+                                                    </button>
+                                                </div>
+
+                                                <div className="p-4 bg-muted/30 border border-border/60 rounded-lg space-y-3">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-sm font-medium text-foreground">Registration Status</span>
+                                                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                                                            warpStatus?.has_account
+                                                                ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                                                                : 'bg-muted text-muted-foreground'
+                                                        }`}>
+                                                            {warpStatus?.has_account ? 'Registered' : 'Not Registered'}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-sm font-medium text-foreground">Profile Status</span>
+                                                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                                                            warpStatus?.has_profile
+                                                                ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                                                                : 'bg-muted text-muted-foreground'
+                                                        }`}>
+                                                            {warpStatus?.has_profile ? 'Generated (WireGuard ready)' : 'No Profile'}
+                                                        </span>
+                                                    </div>
+
+                                                    {warpStatus?.profile && (
+                                                        <div className="pt-2 border-t border-border/40 text-xs text-muted-foreground space-y-1">
+                                                            <div><span className="font-mono text-foreground/80">IPv4:</span> {warpStatus.profile.address_v4}</div>
+                                                            <div><span className="font-mono text-foreground/80">Endpoint:</span> {warpStatus.profile.endpoint}</div>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="flex flex-wrap gap-2 pt-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleGenerateWarpProfile}
+                                                        disabled={warpLoadingAction !== null}
+                                                        className="px-3 py-2 text-xs font-medium bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                                                    >
+                                                        {warpStatus?.has_profile ? 'Regenerate Profile' : 'Generate Profile'}
+                                                    </button>
+
+                                                    {warpStatus?.has_account && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleUnregisterWarp}
+                                                            disabled={warpLoadingAction !== null}
+                                                            className="px-3 py-2 text-xs font-medium bg-destructive/10 text-destructive border border-destructive/20 rounded-md hover:bg-destructive/20 transition-colors disabled:opacity-50"
+                                                        >
+                                                            Unregister WARP
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </div>

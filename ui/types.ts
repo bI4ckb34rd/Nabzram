@@ -80,7 +80,7 @@ export interface SubscriptionUrlTestResponse {
 export interface RoutingRule {
   id: string;
   name?: string | null;
-  action: 'bypass' | 'proxy' | 'block';
+  action: 'bypass' | 'proxy' | 'block' | 'warp';
   domain: string[];
   ip: string[];
   port?: string | null;
@@ -90,6 +90,37 @@ export interface RoutingRule {
 }
 
 export type TunRouting = 'ipv4_ipv6' | 'ipv4' | 'ipv6';
+
+export interface WarpAccount {
+  device_id: string;
+  access_token: string;
+  private_key: string;
+  license_key?: string;
+  account_type?: string;
+  warped?: boolean | null;
+  warp_plus?: boolean | null;
+}
+
+export interface WarpProfile {
+  private_key: string;
+  address_v4: string;
+  address_v6: string;
+  peer_public_key: string;
+  endpoint: string;
+  dns?: string[];
+  mtu?: number;
+  allowed_ips?: string[];
+}
+
+export interface WarpStatusResponse {
+  success: boolean;
+  enabled: boolean;
+  has_account: boolean;
+  has_profile: boolean;
+  account?: WarpAccount | null;
+  profile?: WarpProfile | null;
+  message?: string;
+}
 
 export interface SettingsResponse {
   socks_port: number | null;
@@ -102,6 +133,12 @@ export interface SettingsResponse {
   tun_routing: TunRouting;
   dns_hijack: boolean;
   routing_rules: RoutingRule[];
+  warp_enabled?: boolean;
+  warp_route_all?: boolean;
+  warp_has_account?: boolean;
+  warp_has_profile?: boolean;
+  warp_account?: WarpAccount | null;
+  warp_profile?: WarpProfile | null;
 }
 
 export interface SettingsUpdate {
@@ -115,6 +152,8 @@ export interface SettingsUpdate {
   tun_routing?: TunRouting;
   dns_hijack?: boolean;
   routing_rules?: RoutingRule[];
+  warp_enabled?: boolean;
+  warp_route_all?: boolean;
 }
 
 export interface SystemInfo {

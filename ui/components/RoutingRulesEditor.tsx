@@ -6,6 +6,7 @@ import { ChevronRightIcon } from './icons';
 const actionOptions: SelectOption[] = [
     { value: 'bypass', label: 'Bypass' },
     { value: 'proxy', label: 'Proxy' },
+    { value: 'warp', label: 'WARP' },
     { value: 'block', label: 'Block' },
 ];
 
@@ -36,12 +37,14 @@ const splitList = (value: string): string[] =>
 const actionLabel = (action: RoutingRule['action']): string => {
     if (action === 'bypass') return 'Bypass';
     if (action === 'proxy') return 'Proxy';
+    if (action === 'warp') return 'WARP';
     return 'Block';
 };
 
 const actionBadgeClass = (action: RoutingRule['action']): string => {
     if (action === 'bypass') return 'bg-success/15 text-success';
     if (action === 'proxy') return 'bg-primary/15 text-primary';
+    if (action === 'warp') return 'bg-amber-500/15 text-amber-500';
     return 'bg-destructive/15 text-destructive';
 };
 

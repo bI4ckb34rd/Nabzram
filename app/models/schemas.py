@@ -85,6 +85,14 @@ class SettingsUpdate(BaseModel):
         None,
         description="Custom routing rules for bypass, proxy, or block",
     )
+    warp_enabled: Optional[bool] = Field(
+        None,
+        description="Enable Cloudflare WARP WireGuard outbound chaining through proxy",
+    )
+    warp_route_all: Optional[bool] = Field(
+        None,
+        description="Route all traffic through WARP outbound",
+    )
 
     @field_validator("socks_port")
     @classmethod

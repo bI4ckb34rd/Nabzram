@@ -28,6 +28,7 @@ import {
     AppearanceUpdateResponse,
     GetServerJsonResponse,
     UpdateServerJsonResponse,
+    WarpStatusResponse,
     ApiErrorData
 } from '../types';
 
@@ -167,6 +168,26 @@ export async function getAppearance(): Promise<AppearanceResponse> {
 
 export async function updateAppearance(data: AppearanceUpdate): Promise<AppearanceUpdateResponse> {
     return callApp('update_appearance', data);
+}
+
+export async function getWarpStatus(): Promise<WarpStatusResponse> {
+    return callApp<WarpStatusResponse>('get_warp_status');
+}
+
+export async function enableWarp(): Promise<WarpStatusResponse> {
+    return callApp<WarpStatusResponse>('enable_warp');
+}
+
+export async function disableWarp(): Promise<WarpStatusResponse> {
+    return callApp<WarpStatusResponse>('disable_warp');
+}
+
+export async function generateWarpProfile(): Promise<WarpStatusResponse> {
+    return callApp<WarpStatusResponse>('generate_warp_profile');
+}
+
+export async function unregisterWarp(): Promise<WarpStatusResponse> {
+    return callApp<WarpStatusResponse>('unregister_warp');
 }
 
 export async function getServerJson(subscriptionId: string, serverId: string): Promise<GetServerJsonResponse> {

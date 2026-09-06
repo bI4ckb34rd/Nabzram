@@ -21,6 +21,7 @@ class RoutingAction(str, Enum):
     BYPASS = "bypass"
     PROXY = "proxy"
     BLOCK = "block"
+    WARP = "warp"
 
 
 class TunRouting(str, Enum):
@@ -145,6 +146,22 @@ class SettingsModel(BaseModel):
     routing_rules: list[RoutingRuleModel] = Field(
         default_factory=list,
         description="Custom routing rules for bypass, proxy, or block",
+    )
+    warp_enabled: Optional[bool] = Field(
+        False,
+        description="Enable Cloudflare WARP WireGuard outbound chaining through proxy",
+    )
+    warp_route_all: Optional[bool] = Field(
+        False,
+        description="Route all traffic through WARP outbound",
+    )
+    warp_account: dict[str, Any] | None = Field(
+        None,
+        description="Persisted Cloudflare WARP account credentials",
+    )
+    warp_profile: dict[str, Any] | None = Field(
+        None,
+        description="Persisted Cloudflare WARP WireGuard profile configuration",
     )
 
 

@@ -31,6 +31,12 @@ def _serialize_settings(s) -> dict[str, Any]:
         "routing_rules": [
             rule.model_dump() if hasattr(rule, "model_dump") else rule for rule in getattr(s, "routing_rules", []) or []
         ],
+        "warp_enabled": getattr(s, "warp_enabled", False),
+        "warp_route_all": getattr(s, "warp_route_all", False),
+        "warp_has_account": bool(getattr(s, "warp_account", None)),
+        "warp_has_profile": bool(getattr(s, "warp_profile", None)),
+        "warp_account": getattr(s, "warp_account", None),
+        "warp_profile": getattr(s, "warp_profile", None),
     }
 
 
